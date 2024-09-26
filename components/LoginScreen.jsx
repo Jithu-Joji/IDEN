@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, TextInput, Text, Pressable, StyleSheet, Alert, Image } from 'react-native';
+import { View, TextInput, Text, Pressable, StyleSheet, Alert, Image, ActivityIndicator, Keyboard } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import CryptoJS from 'crypto-js';
 
 const g = 5; // Constant g
@@ -29,65 +30,107 @@ const responseProver = (r, c, hashedPassword) => {
   return s;
 };
 
+const authorityNodes = [
+  'https://47a3-2409-4072-183-d9b2-b823-5a75-dae6-8eaa.ngrok-free.app',
+  'https://8a80-115-240-194-54.ngrok-free.app',
+];
+
 const LoginScreen = ({ navigation }) => {
   const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
   const [rValue, setRValue] = useState(null); // Store r value
+  const [loading, setLoading] = useState(false); // Loader state
 
   const handleLogin = async () => {
+    Keyboard.dismiss();
     if (userId && password) {
-      // Generate hashedPassword
-      //const hashedPassword = parseInt(CryptoJS.SHA256(password).toString(), 16); // Parse as integer for calculation
-      const hashedPassword = parseInt(password, 10)
+      // Start loading
+      setLoading(true);
+
+      const hashedPassword = parseInt(password, 10);
+
       // Step 1: Generate commitment T
       const { r, T } = commitmentProver();
       setRValue(r); // Store r for later use
       console.log(`Prover sends T = ${T}`);
 
-      try {
-        // Step 2: Send POST request to /initiate_zkp with userId and T
-        const response = await fetch('https://47a3-2409-4072-183-d9b2-b823-5a75-dae6-8eaa.ngrok-free.app/initiate_zkp', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ userId, T }),
-        });
+      let successfulResponses = 0; // Counter for successful responses
+      let tokens = []; // Array to store tokens from authority nodes
 
-        const result = await response.json();
+      // Loop through each authority node
+      for (let i = 0; i < authorityNodes.length; i++) {
+        const nodeUrl = authorityNodes[i];
 
-        if (response.ok) {
-          const challenge = result.challenge; // Get challenge from response
-          console.log(`Received challenge: ${challenge}`);
-
-          // Step 3: Calculate response s using responseProver function
-          const s = responseProver(r, challenge, hashedPassword);
-          console.log(`Prover sends response s = ${s}`);
-
-          // Step 4: Send s, challenge (c), and userId to /verify_zkp
-          const verifyResponse = await fetch('https://47a3-2409-4072-183-d9b2-b823-5a75-dae6-8eaa.ngrok-free.app/verify_zkp', {
+        try {
+          // Step 2: Send POST request to /initiate_zkp on the current authority node
+          const response = await fetch(`${nodeUrl}/initiate_zkp`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ s, challenge, userId }),
+            body: JSON.stringify({ userId, T }),
           });
 
-          const verifyResult = await verifyResponse.json();
+          const result = await response.json();
 
-          if (verifyResponse.ok) {
-            Alert.alert('Login Successful!', verifyResult.message);
-          } else {
-            Alert.alert('Login Failed', verifyResult.message || 'Verification failed');
+          if (response.ok) {
+            const challenge = result.challenge; // Get challenge from response
+            console.log(`Received challenge from ${nodeUrl}: ${challenge}`);
+
+            // Step 3: Calculate response s using responseProver function
+            const s = responseProver(r, challenge, hashedPassword);
+            console.log(`Prover sends response s = ${s} to ${nodeUrl}`);
+
+            // Step 4: Send s, challenge, and userId to /verify_zkp
+            const verifyResponse = await fetch(`${nodeUrl}/verify_zkp`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ s, challenge, userId }),
+            });
+
+            const verifyResult = await verifyResponse.json();
+
+            if (verifyResponse.ok) {
+              successfulResponses += 1;
+              if (verifyResult.token) {
+                tokens.push(verifyResult.token); // Store all tokens
+                console.log(`Received token from ${nodeUrl}: ${verifyResult.token}`);
+              }
+            }
           }
-        } else {
-          Alert.alert('Login failed', result.message || 'An error occurred');
+
+          // If the number of successful responses equals n/2 + 1, proceed to token validation
+          if (successfulResponses >= Math.floor(authorityNodes.length / 2) + 1) {
+            break; // Exit the loop early as the condition is met
+          }
+        } catch (error) {
+          console.log(`Error connecting to ${nodeUrl}:`, error);
+          // Continue to next node if there's an error
         }
-      } catch (error) {
-        Alert.alert('Error', 'Failed to connect to the blockchain');
       }
+
+      // Final validation after all requests
+      if (successfulResponses >= Math.floor(authorityNodes.length / 2) + 1) {
+        // Store all received tokens securely using AsyncStorage
+        try {
+          await AsyncStorage.setItem('userTokens', JSON.stringify(tokens));
+          Alert.alert('Login Successful!', 'You have been authenticated successfully.');
+        } catch (storageError) {
+          Alert.alert('Error', 'Failed to store the authentication tokens.');
+          console.error('AsyncStorage Error:', storageError);
+        }
+      } else {
+        Alert.alert('Login Failed', 'Verification did not pass majority of authority nodes.');
+        setLoading(false);
+      }
+
+      // Stop loading
+      setLoading(false);
     } else {
       Alert.alert('Please fill in all fields.');
+      setLoading(false);
     }
   };
 
@@ -110,8 +153,12 @@ const LoginScreen = ({ navigation }) => {
         secureTextEntry
         style={styles.input}
       />
-      <Pressable style={styles.button} onPress={handleLogin}>
-        <Text style={styles.buttonText}>Login</Text>
+      <Pressable style={styles.button} onPress={handleLogin} disabled={loading}>
+        {loading ? (
+          <ActivityIndicator size="small" color="#fff" />
+        ) : (
+          <Text style={styles.buttonText}>Login</Text>
+        )}
       </Pressable>
     </View>
   );
@@ -130,7 +177,7 @@ const styles = StyleSheet.create({
     resizeMode: 'contain', 
     alignSelf: 'center', 
     marginBottom: 40,
-    marginTop:-60 
+    marginTop: -60,
   },
   input: {
     borderWidth: 1,

@@ -7,9 +7,9 @@ const HomeScreen = ({ navigation }) => {
       <Text style={styles.title}>IDENTITY ACCESS MANAGEMENT SYSTEM</Text>
       
       <View style={styles.container}>
-      <Image 
-        source={require('../assets/home.png')} 
-        style={styles.image}
+        <Image 
+          source={require('../assets/home.png')} 
+          style={styles.image}
         />
         <Pressable style={styles.button1} onPress={() => navigation.navigate('Register')}>
           <Text style={styles.text}>{"Register"}</Text>
